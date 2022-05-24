@@ -1,0 +1,152 @@
+scpios(){
+scp -rp root@$IPHONE_IP:$1 .
+}
+
+emulatorlistavds(){
+emulator.exe -list-avds
+}
+
+emulatormobsf(){ ## bugged, sometimes works, sometimes doesn't.
+(emulator.exe -avd mobsf -writable-system -no-snapshot)
+}
+
+emulatornexus(){
+(emulator.exe @nexus)
+}
+
+emulatordownloader(){
+(emulator.exe @downloader)
+}
+
+adbpushfrida86(){
+        GOBACK=$(pwd)
+        cd ~/Downloads/frida-server-*-x86;
+        adb push frida-server-*-android-x86 /data/local/tmp;
+        adb shell chmod 777 /data/local/tmp/frida-server-*-android-x86;
+        cd ..;
+        adb push 8080burp.crt /data/local/tmp/cert-der.crt
+        adb shell chmod 755 /data/local/tmp/cert-der.crt
+        cd $GOBACK;
+}
+
+adbkillp(){
+        adb shell kill -9 $(frida-ps -Uai | grep $1 | cut -d " " -f 1);
+}
+
+adbfridarun(){
+        adb root ; (adb shell ./data/local/tmp/frida-server-*-android-x86* &)
+}
+
+adblistpackage(){
+        PKG_NAME="$(adb shell pm list packages | grep $1 | tr -d '\r' | cut -d ':' -f2)";
+        echo "${PKG_NAME}";
+}
+
+fridalistpackage(){
+        fridapsremote $1 | grep "$2" | awk -F " " '{print $NF}';
+}
+
+adbpathpackage(){
+        PKG_PATH="$(adb shell pm path $1 | tr -d '\r' | sed 's/package://g' | grep 'base.apk')"
+        echo "${PKG_PATH}"
+}
+
+adbpackagepull(){
+	if [ -z "$1" ]
+	then
+			echo "Por favor, insira um trecho do nome da aplicação"
+	else
+			GOBACK=$(pwd)
+			#echo $GOBACK
+			PKGNAME="$(adblistpackage $1)"
+			echo '[ + ] Package Name: '$PKGNAME
+			PKGPATH="$(adbpathpackage $PKGNAME)"
+			echo "[ + ] Package path: $PKGPATH"
+			cd $LIN2WINTMP
+			adb pull $PKGPATH
+			mv base.apk $PKGNAME.apk
+			cd $GOBACK
+			mv $LIN2WINTMP$PKGNAME'.apk' .
+	fi
+}
+
+adblistfoldercontent(){
+	if [ -z "$1" ]
+	then
+			echo "Por favor, insira um trecho do nome da aplicação";
+			echo '$1 PACKAGE_NAME';
+			echo '$2 Fodler - DEFAULT=SHARED_PREFS';
+			echo '$3 GREP parameter';
+	else
+			PKGNAME="$(adblistpackage $1)";
+			if [ -z "$2" ]
+			  then
+					FOLDER='shared_prefs';
+			else
+					FOLDER="$2";
+			fi
+			FILES="$(adb shell ls /data/data/$PKGNAME/$FOLDER/ | tr -d '\r' | sed 's/package://g')";
+			for i in ${FILES[@]};
+			do
+					echo "#####";
+					echo "File: $i";
+					echo "#####";
+					FILE="/data/data/$PKGNAME/$FOLDER/$i";
+					if [ -z "$3" ]
+					  then
+							echo "$(adb shell cat $FILE)";
+					else
+							echo "$(adb shell cat $FILE | grep $3 )";
+
+					fi
+
+					echo "";
+
+			done
+	fi
+
+}
+
+adbmonitorlogcat(){
+  IDPS=$(fridaps | grep $1 | awk -F" " '{print $1}')
+
+  if [ $IDPS != "-" ]
+  then
+          adb shell "logcat | grep $IDPS" | tee -a $1".logcat"
+  else
+          echo '[ - ] Package not started on device.'
+  fi
+}
+
+fridaps(){
+	frida-ps -Uai;
+}
+
+fridakillp(){
+   frida-kill -U $(fridaps | grep $1 |  awk -F " " '{print $1}');
+}
+
+dex2jar(){
+	/opt/pt_mobile_tools/dex2jar/dex2jar.sh $@
+}
+
+checkfridarunning(){
+	ANSWER=$(frida-ps -Uai);
+	FAISUC=$(echo "$ANSWER" | cut -d " " -f1);
+	#echo $FAISUC;
+	if [ "$FAISUC" == "Failed" ]; then
+			adbfridarun;
+	fi
+}
+
+fridaexplore(){
+	checkfridarunning;
+	frida -U --no-pause -f $(adblistpackage $1) "${@:3}" -l $2 ; adbkillp $1
+	adbkillp $1
+}
+
+objectionexplore(){
+	checkfridarunning;
+	objection -g $(adblistpackage $1) explore "${@:2}";
+	adbkillp $1;
+}
