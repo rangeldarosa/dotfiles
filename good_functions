@@ -1,0 +1,101 @@
+e64d(){
+	echo -n "$1" | base64 -d;
+	echo '';
+}
+
+e64e(){
+	echo -n "$1" | base64;
+	echo '';
+}
+
+openprofile(){
+nano $@ ~/.zshrc; echo '[+] Running sprofile'; sprofile;
+}
+
+sprofile(){
+GOBACK=$(pwd);
+source ~/.zshrc;
+cd $GOBACK;
+}
+
+hgrip(){ 
+history | grep $1
+}
+
+#----- AWS -------
+
+s3ls(){
+aws s3 ls s3://$@
+}
+
+s3cp(){
+aws s3 cp $2 s3://$1 "${@:3}"
+}
+
+
+#----- misc -----
+certspotter(){
+curl -s https://certspotter.com/api/v0/certs\?domain\=$1 | jq '.[].dns_names[]' | sed 's/\"//g' | sed 's/\*\.//g' | sort -u | grep $1
+} #h/t Michiel Prins
+
+crtsh(){
+curl -s https://crt.sh/?q=%.$1  | sed 's/<\/\?[^>]\+>//g' | grep $1
+}
+
+certnmap(){
+curl https://certspotter.com/api/v0/certs\?domain\=$1 | jq '.[].dns_names[]' | sed 's/\"//g' | sed 's/\*\.//g' | sort -u | grep $1  | nmap -T5 -Pn -sS -i - -$
+} #h/t Jobert Abma
+
+certbrute(){
+cat $1.txt | while read line; do python3 dirsearch.py -e . -u "https://$line"; done
+}
+
+ipinfo(){
+curl http://ipinfo.io/$1
+}
+
+#------ Tools ------
+dirsearch(){
+cd ~/tools/dirsearch*
+python3 dirsearch.py -w '/root/tools/SecLists/Discovery/Web-Content/raft-medium-directories.txt' -H 'X-FORWARDED-FOR: 127.0.0.1' -e 'asp,aspx,bat,c,cfm,cgi,css,com,dll,exe,htm,html,inc,jhtml,js,jsa,jsp,log,mdb,nsf,pcap,php,php2,php3,php4,php5,php6,php7,phps,pht,phtml,pl,reg,sh,shtml,sql,swf,txt,xml' -u $1 ${@:2}
+}
+
+knock(){
+cd ~/tools/knock/knockpy
+python knockpy.py -w list.txt $1
+}
+
+ncx(){
+nc -l -n -vv -p $1 -k
+}
+
+aquatonefun(){
+aquatone -chrome-path $CHROMIUM_PATH_WIN -out $AQUATONE_OUTPUT_LOCATION $@
+}
+
+secheaders(){
+python2 ~/tools/securityheaders/securityheaders.py $@
+}
+
+testssl(){
+~/tools/testssl/testssl.sh $@ | tee -a $(echo $1 | sed 's/^http\(\|s\):\/\///g' | cut -d "/" -f1)'_test_ssl'
+}
+
+rapiddns(){
+curl -s "https://rapiddns.io/subdomain/$1?full=1" \
+ | grep -oP '_blank">\K[^<]*' \
+ | grep -v http \
+ | sort -u
+}
+
+ampassive(){
+amass enum -passive -d $1 -o $1_passive_scan.data ; cat $1_passive_scan.data | httprobe -c 200 | tee -a $1_passive_scan-web-domains.txt
+}
+
+amactive(){
+amass enum -d $1 -o $1_active_scan.data ; cat $1_active_scan.data | httprobe -c 200 | tee -a $1_active_scan-web-domains.txt
+}
+
+fd(){
+findomain -o json -t $1
+}
