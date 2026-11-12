@@ -1,0 +1,140 @@
+# ==============================================================================
+# 1. CSWAP-SYNC: Reconstrói oauthAccount (.claude.json) e tiers (.credentials.json)
+# ==============================================================================
+cswap-sync() {
+  local CRED_FILE="$HOME/.claude/.credentials.json"
+  local CONF_FILE="$HOME/.claude.json"
+
+  if [ ! -f "$CRED_FILE" ]; then
+    echo "[cswap-sync] Erro: Arquivo $CRED_FILE não encontrado."
+    return 1
+  fi
+
+  local TOKEN
+  TOKEN=$(jq -r '.claudeAiOauth.accessToken // empty' "$CRED_FILE")
+  if [ -z "$TOKEN" ]; then
+    echo "[cswap-sync] Erro: accessToken ausente em $CRED_FILE."
+    return 1
+  fi
+
+  # Garante esqueleto mínimo se o ~/.claude.json não existir
+  if [ ! -f "$CONF_FILE" ]; then
+    echo '{"hasCompletedOnboarding": true, "theme": "dark"}' > "$CONF_FILE"
+  fi
+
+  local PROFILE
+  PROFILE=$(curl -sS --max-time 5 "https://api.anthropic.com/api/oauth/profile" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "anthropic-beta: oauth-2025-04-20" \
+    -H "Content-Type: application/json")
+
+  if echo "$PROFILE" | jq -e '.account.uuid' > /dev/null 2>&1; then
+    # Atualiza ~/.claude.json preservando MCPs e projetos, e limpa cache do GrowthBook
+    jq --argjson prof "$PROFILE" '
+      del(.cachedGrowthBookFeatures) |
+      .hasCompletedOnboarding = true |
+      .oauthAccount = {
+        accountUuid: $prof.account.uuid,
+        emailAddress: $prof.account.email,
+        displayName: ($prof.account.display_name // $prof.account.full_name),
+        organizationUuid: $prof.organization.uuid,
+        organizationName: $prof.organization.name,
+        organizationRole: $prof.organization.role,
+        organizationType: $prof.organization.organization_type,
+        billingType: $prof.organization.billing_type,
+        rateLimitTier: $prof.organization.rate_limit_tier,
+        hasExtraUsageEnabled: ($prof.organization.has_extra_usage_enabled // false),
+        hasClaudeMax: ($prof.account.has_claude_max // false),
+        hasClaudePro: ($prof.account.has_claude_pro // false)
+      }
+    ' "$CONF_FILE" > "${CONF_FILE}.tmp" && mv "${CONF_FILE}.tmp" "$CONF_FILE"
+
+    # Sincroniza subscriptionType, rateLimitTier e scopes no .credentials.json
+    jq --argjson prof "$PROFILE" '
+      .claudeAiOauth.subscriptionType = (
+        if $prof.account.has_claude_max then "max"
+        elif $prof.account.has_claude_pro then "pro"
+        else ($prof.organization.organization_type | sub("^claude_"; ""))
+        end
+      ) |
+      .claudeAiOauth.rateLimitTier = $prof.organization.rate_limit_tier |
+      .claudeAiOauth.scopes = (.claudeAiOauth.scopes // ["user:inference", "user:profile"])
+    ' "$CRED_FILE" > "${CRED_FILE}.tmp" && mv "${CRED_FILE}.tmp" "$CRED_FILE"
+
+    chmod 600 "$CRED_FILE" "$CONF_FILE"
+
+    local EMAIL TIER
+    EMAIL=$(echo "$PROFILE" | jq -r '.account.email')
+    TIER=$(echo "$PROFILE" | jq -r '.organization.rate_limit_tier')
+    echo "[cswap-sync] Sincronizado: $EMAIL ($TIER)"
+  else
+    # Fallback se o accessToken de 8h tiver expirado: limpa chaves para o CLI renovar via refreshToken no boot
+    jq 'del(.oauthAccount, .cachedGrowthBookFeatures)' "$CONF_FILE" > "${CONF_FILE}.tmp" && mv "${CONF_FILE}.tmp" "$CONF_FILE"
+    chmod 600 "$CRED_FILE" "$CONF_FILE"
+    echo "[cswap-sync] Aviso: Token aguardando refresh ou sem rede. Cache limpo para auto-sync no próximo comando."
+  fi
+}
+
+# ==============================================================================
+# 2. CSWAP: Alterna os arquivos de credenciais e chama o cswap-sync
+#    Uso: cswap       (alterna entre Conta 1 e Conta 2)
+#         cswap 1     (força Conta 1)
+#         cswap 2     (força Conta 2)
+#         cswap status(mostra qual conta está ativa)
+# ==============================================================================
+cswap() {
+  local CLAUDE_DIR="$HOME/.claude"
+  local CRED_ACTIVE="$CLAUDE_DIR/.credentials.json"
+  local CRED_ACC1="$CLAUDE_DIR/.credentials.acc1.json"
+  local CRED_ACC2="$CLAUDE_DIR/.credentials.acc2.json"
+  local FLAG_ACC2="$CLAUDE_DIR/.active_acc2"
+
+  # Subcomando de status rápido
+  if [ "$1" = "status" ]; then
+    local SLOT="Conta 1"
+    [ -f "$FLAG_ACC2" ] && SLOT="Conta 2"
+    echo "[cswap] Slot ativo: $SLOT | E-mail no cache: $(jq -r '.oauthAccount.emailAddress // "não sincronizado"' "$HOME/.claude.json" 2>/dev/null)"
+    return 0
+  fi
+
+  # Trava de segurança: impede swap com instância aberta
+  if pgrep -x "claude" > /dev/null; then
+    echo "[cswap] Erro: Feche a sessão ativa do Claude Code antes de trocar de conta."
+    return 1
+  fi
+
+  # Define para qual conta ir (alterna por padrão ou aceita 1 / 2 como argumento)
+  local TARGET=""
+  if [ "$1" = "1" ]; then
+    TARGET="1"
+  elif [ "$1" = "2" ]; then
+    TARGET="2"
+  else
+    if [ -f "$FLAG_ACC2" ]; then TARGET="1"; else TARGET="2"; fi
+  fi
+
+  if [ "$TARGET" = "1" ]; then
+    if [ ! -f "$FLAG_ACC2" ] && [ -f "$CRED_ACTIVE" ] && [ ! -f "$CRED_ACC1" ]; then
+      echo "[cswap] Conta 1 já está ativa."
+    else
+      [ -f "$CRED_ACTIVE" ] && mv "$CRED_ACTIVE" "$CRED_ACC2"
+      mv "$CRED_ACC1" "$CRED_ACTIVE"
+      rm -f "$FLAG_ACC2"
+      touch "$CLAUDE_DIR/.active_acc1"
+      echo "[cswap] Slot trocado -> Conta 1"
+    fi
+  else
+    if [ -f "$FLAG_ACC2" ] && [ -f "$CRED_ACTIVE" ] && [ ! -f "$CRED_ACC2" ]; then
+      echo "[cswap] Conta 2 já está ativa."
+    else
+      [ -f "$CRED_ACTIVE" ] && mv "$CRED_ACTIVE" "$CRED_ACC1"
+      mv "$CRED_ACC2" "$CRED_ACTIVE"
+      rm -f "$CLAUDE_DIR/.active_acc1"
+      touch "$FLAG_ACC2"
+      echo "[cswap] Slot trocado -> Conta 2"
+    fi
+  fi
+
+  chmod 600 "$CRED_ACTIVE"
+  cswap-sync
+}
